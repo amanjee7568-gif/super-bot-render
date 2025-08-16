@@ -1,0 +1,8 @@
+# बॉट को अस्थायी रूप से चलाकर webhook set करें
+import requests
+WEBHOOK_URL = "https://super-bot.onrender.com/telegram"
+response = requests.post(
+    f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+    json={"url": WEBHOOK_URL}
+)
+print(response.json())
