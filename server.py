@@ -1,162 +1,120 @@
-# -*- coding: utf-8 -*-
+# server.py
 import os
-import random
-import logging
-from flask import Flask, request
 import telebot
+from flask import Flask, request
 
-# ================= CONFIG =================
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"   # यहां अपना बॉट टोकन भरो
-ADMIN_ID = 123456789                # यहां अपना Telegram ID भरो
-
-PAYMENT_LINKS = {
-    "100₹": "https://payments.cashfree.com/links?code=r9179auduhe0",
-    "200₹": "https://payments.cashfree.com/links?code=i917ad964he0",
-    "300₹": "https://payments.cashfree.com/links?code=u917aj2p65s0",
-}
-
-# Odds (default: 50/50)
-GAME_ODDS = {"win": 50, "lose": 50}
-
-# Data Store
-USERS = {}
-
-# Flask App
-app = Flask(__name__)
+# ==========================
+# CONFIG
+# ==========================
+TOKEN = os.getenv("BOT_TOKEN", "PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE")
 bot = telebot.TeleBot(TOKEN)
-logging.basicConfig(level=logging.INFO)
+app = Flask(__name__)
 
+# Dummy user wallets (production में DB use कर लेना)
+user_wallets = {}   # {user_id: {"game": int, "premium": int}}
 
-# ================= HELPERS =================
-def get_user(user_id, name="Guest"):
-    if user_id not in USERS:
-        USERS[user_id] = {
-            "name": name,
-            "game_wallet": 100,
-            "premium_wallet": 0,
-            "premium": False,
-        }
-    return USERS[user_id]
+# ==========================
+# COMMAND HANDLERS
+# ==========================
 
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.chat.id
+    if user_id not in user_wallets:
+        user_wallets[user_id] = {"game": 100, "premium": 0}  # default coins
+    
+    text = (
+        f"🚀 Welcome {message.from_user.first_name}!\n\n"
+        f"🪙 Game Wallet: {user_wallets[user_id]['game']} coins\n"
+        f"💎 Premium Wallet: {user_wallets[user_id]['premium']} coins\n\n"
+        f"👉 Use /wallet to check balance\n"
+        f"👉 Use /bet to place a bet\n"
+        f"👉 Use /pay to add balance\n"
+        f"👉 Use /help for assistance"
+    )
+    bot.reply_to(message, text)
 
-def make_keyboard(options):
-    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-    kb = InlineKeyboardMarkup()
-    for opt in options:
-        kb.add(InlineKeyboardButton(opt, callback_data=opt))
-    return kb
+@bot.message_handler(commands=['wallet'])
+def wallet(message):
+    user_id = message.chat.id
+    if user_id not in user_wallets:
+        user_wallets[user_id] = {"game": 100, "premium": 0}
+    bal = user_wallets[user_id]
+    bot.reply_to(message, f"🪙 Game Wallet: {bal['game']} coins\n💎 Premium Wallet: {bal['premium']} coins")
 
+@bot.message_handler(commands=['bet'])
+def bet(message):
+    user_id = message.chat.id
+    if user_id not in user_wallets:
+        user_wallets[user_id] = {"game": 100, "premium": 0}
+    
+    text = (
+        "🎲 Place your bet!\n"
+        "Send in this format:\n"
+        "`/bet <amount> <odds>`\n\n"
+        "Example: `/bet 50 2` → Bet 50 coins at 2x odds"
+    )
+    bot.reply_to(message, text, parse_mode="Markdown")
 
-# ================= BOT COMMANDS =================
-@bot.message_handler(commands=["start"])
-def start_cmd(message):
-    user = get_user(message.chat.id, message.from_user.first_name)
-    text = f"""
-👋 Welcome {user['name']}!
-
-🆔 ID: {message.chat.id}
-💰 Game Wallet: {user['game_wallet']} coins
-💎 Premium Wallet: {user['premium_wallet']} coins
-"""
-    kb = make_keyboard(["🎮 Games", "💰 Wallet", "⭐ Premium", "📢 Help"])
-    bot.send_message(message.chat.id, text, reply_markup=kb)
-
-
-@bot.message_handler(commands=["setodds"])
-def set_odds(message):
-    if message.chat.id != ADMIN_ID:
-        return bot.reply_to(message, "⛔ You are not admin!")
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("/bet "))
+def bet_custom(message):
     try:
-        _, win, lose = message.text.split()
-        GAME_ODDS["win"] = int(win)
-        GAME_ODDS["lose"] = int(lose)
-        bot.reply_to(message, f"✅ Odds updated: Win {win}% | Lose {lose}%")
-    except:
-        bot.reply_to(message, "❌ Usage: /setodds <win%> <lose%>")
+        user_id = message.chat.id
+        _, amt, odds = message.text.split()
+        amt, odds = int(amt), float(odds)
 
+        if user_id not in user_wallets:
+            user_wallets[user_id] = {"game": 100, "premium": 0}
 
-@bot.message_handler(commands=["addcoins"])
-def add_coins(message):
-    if message.chat.id != ADMIN_ID:
-        return
-    try:
-        _, uid, amount = message.text.split()
-        uid, amount = int(uid), int(amount)
-        USERS[uid]["game_wallet"] += amount
-        bot.send_message(uid, f"💰 {amount} coins added by Admin!")
-    except:
-        bot.reply_to(message, "❌ Usage: /addcoins <id> <amount>")
+        if user_wallets[user_id]["game"] < amt:
+            bot.reply_to(message, "❌ Not enough balance in Game Wallet.")
+            return
 
+        # deduct first
+        user_wallets[user_id]["game"] -= amt
 
-# ================= CALLBACKS =================
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    user = get_user(call.message.chat.id, call.from_user.first_name)
+        import random
+        if random.choice([True, False]):  # win
+            win_amt = int(amt * odds)
+            user_wallets[user_id]["game"] += win_amt
+            bot.reply_to(message, f"🎉 You won! You got {win_amt} coins.\nNew Balance: {user_wallets[user_id]['game']}")
+        else:  # lose
+            bot.reply_to(message, f"😢 You lost {amt} coins.\nNew Balance: {user_wallets[user_id]['game']}")
 
-    if call.data == "🎮 Games":
-        kb = make_keyboard(["🎲 Dice", "🃏 Cards", "🎡 Spin", "🏏 Cricket"])
-        bot.edit_message_text("Choose a game:", call.message.chat.id, call.message.id, reply_markup=kb)
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Error in bet format. Use `/bet 50 2`")
 
-    elif call.data in ["🎲 Dice", "🃏 Cards", "🎡 Spin", "🏏 Cricket"]:
-        kb = make_keyboard(["100", "200", "500"])
-        bot.edit_message_text(f"{call.data} selected 🎮\nChoose bet amount:", call.message.chat.id, call.message.id, reply_markup=kb)
+@bot.message_handler(commands=['pay'])
+def pay(message):
+    text = (
+        "💳 Payment Options:\n\n"
+        "100₹ → [Click Here](https://payments.cashfree.com/links?code=r9179auduhe0)\n"
+        "200₹ → [Click Here](https://payments.cashfree.com/links?code=i917ad964he0)\n"
+        "300₹ → [Click Here](https://payments.cashfree.com/links?code=u917aj2p65s0)\n\n"
+        "After payment, send screenshot to Admin."
+    )
+    bot.reply_to(message, text, parse_mode="Markdown")
 
-    elif call.data.isdigit():
-        amount = int(call.data)
-        if user["game_wallet"] < amount:
-            return bot.answer_callback_query(call.id, "Not enough balance!", show_alert=True)
+@bot.message_handler(commands=['help'])
+def help_cmd(message):
+    user_id = message.chat.id
+    if user_id in user_wallets and user_wallets[user_id]["premium"] > 0:
+        bot.reply_to(message, "💎 Premium Helpdesk:\nYou can contact admin directly for VIP support.")
+    else:
+        bot.reply_to(message, "ℹ️ This service is for Premium users only. Upgrade via /pay to unlock full features.")
 
-        user["game_wallet"] -= amount
-        result = "Win" if random.randint(1, 100) <= GAME_ODDS["win"] else "Lose"
-        if result == "Win":
-            user["game_wallet"] += amount * 2
-
-        bot.send_message(call.message.chat.id, f"🎲 Result: {result}\n💰 Balance: {user['game_wallet']}")
-
-    elif call.data == "💰 Wallet":
-        kb = make_keyboard(["Transfer to Premium", "Buy Premium Coins"])
-        bot.edit_message_text("Wallet Options:", call.message.chat.id, call.message.id, reply_markup=kb)
-
-    elif call.data == "Buy Premium Coins":
-        links = "\n".join([f"{k}: {v}" for k, v in PAYMENT_LINKS.items()])
-        bot.send_message(call.message.chat.id, f"💎 Buy Premium:\n{links}")
-
-    elif call.data == "⭐ Premium":
-        if user["premium"]:
-            bot.send_message(call.message.chat.id, "✅ You are Premium!")
-        else:
-            bot.send_message(call.message.chat.id, "🚫 Premium only! Please upgrade.")
-
-    elif call.data == "📢 Help":
-        if user["premium"]:
-            bot.send_message(call.message.chat.id, "💎 Premium Help: Direct support available.")
-        else:
-            bot.send_message(call.message.chat.id, "ℹ️ Help: Upgrade to Premium for direct support.")
-
-
-# ================= WEBHOOK =================
-@app.route(f"/webhook/{TOKEN}", methods=["POST"])
+# ==========================
+# FLASK WEBHOOK SETUP
+# ==========================
+@app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
-    json_str = request.get_data().decode("UTF-8")
-    update = telebot.types.Update.de_json(json_str)
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
     bot.process_new_updates([update])
-    return "OK", 200
+    return "!", 200
 
-
-@app.route("/")
+@app.route('/')
 def home():
-    return "🤖 Bot is running!"
-
+    return "Bot is running!", 200
 
 if __name__ == "__main__":
-    import threading
-    import time
-    import requests
-
-    def set_webhook():
-        time.sleep(1)
-        url = f"https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/webhook/{TOKEN}"
-        requests.get(url)
-
-    threading.Thread(target=set_webhook).start()
-    app.run(host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
